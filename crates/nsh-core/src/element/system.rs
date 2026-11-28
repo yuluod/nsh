@@ -159,10 +159,10 @@ impl System {
         self
     }
 
-    /// Uses the host virtual filesystem.
     /// Sets where the app's bundled (`asset:/…`) files are on disk, when
     /// the host has them in directories it can name (`process.run` of an
     /// `asset:/…` program resolves through this).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn with_asset_base(mut self, base: Option<crate::image::AssetBase>) -> Self {
         self.asset_base = base;
         self
