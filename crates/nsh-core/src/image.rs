@@ -38,6 +38,8 @@ pub use cache::{CacheHeaders, DEFAULT_DISK_CACHE_SIZE, DiskCache, Fetched, Looku
 mod decoded;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod loader;
+#[cfg(not(target_arch = "wasm32"))]
+pub use loader::AssetBase;
 mod memory;
 #[cfg(not(target_arch = "wasm32"))]
 pub use decoded::{Decoded, Decoder, Done, Frames, Images, Key, Natural, Request, Target, Want};
