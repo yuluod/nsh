@@ -426,6 +426,8 @@ mod native {
         time::{Duration, Instant},
     };
 
+    use crate::image::loader::AssetBase;
+
     use tokio::sync::mpsc as channel;
 
     use super::{Child, ChildEvent, ChildProcess, CommandOutput, ExitResult, Payload};
@@ -538,7 +540,7 @@ mod native {
 
     /// A checked launch: the command, its arguments, where and how long.
     pub(super) struct Launch {
-        command: String,
+        pub(super) command: String,
         args: Vec<String>,
         cwd: PathBuf,
         timeout: Option<Duration>,
@@ -564,7 +566,51 @@ mod native {
             if command.is_empty() || command.contains('\0') {
                 return Err(JsError::Type("invalid executable".into()));
             }
+            // The manifest grants the `asset:/@<package>/<path>` name the
+            // app's source writes; the resolution to a real path (where the
+            // host put the file, in the packaged layout) comes after, and
+            // stays inside.
             if !sys.access.allows_process(&command) {
+                return Err(JsError::access_denied(
+                    format!("`{command}` is not granted by capabilities.process.execute"),
+                    "process",
+                    command,
+                ));
+            }
+            // An `asset:/@<package>/<path>` command runs a file the app
+            // ships, where the host put it.
+            let command = match command.strip_prefix("asset:/") {
+                Some(path) => {
+                    if path.contains("..") {
+                        return Err(JsError::Type(
+                            "an asset program path may not contain `..`".into(),
+                        ));
+                    }
+                    let Some(base) = sys.asset_base.as_ref() else {
+                        return Err(JsError::Error(format!(
+                            "`{command}` names a bundled file, and this host resolves no \
+                             asset paths (run the packaged app)"
+                        ))
+                        .with_code("ENOENT"));
+                    };
+                    if let AssetBase::Http(_) = base {
+                        return Err(JsError::Error(format!(
+                            "`{command}` names a bundled file, and in development the app's \
+                             assets are served over HTTP: run the packaged app"
+                        ))
+                        .with_code("ENOENT"));
+                    }
+                    match base.file(path).filter(|file| file.is_file()) {
+                        Some(file) => file.to_string_lossy().into_owned(),
+                        None => {
+                            return Err(JsError::Error(format!("the app ships no `{command}`"))
+                                .with_code("ENOENT"));
+                        }
+                    }
+                }
+                None => command,
+            };
+            if args.len() > 4096 {
                 return Err(JsError::access_denied(
                     format!("`{command}` is not granted by capabilities.process.execute"),
                     "process",
@@ -1691,6 +1737,137 @@ mod tests {
         super::native::join_by(vec![done, blocked], start + Duration::from_millis(50));
         assert!(start.elapsed() < Duration::from_secs(1));
         drop(tx);
+    }
+
+    /// An `asset:/…` command resolves to the file the host's asset
+    /// directories have, refuses a path leading out of them, and refuses
+    /// where the assets are served (the dev server) or unknown.
+    #[test]
+    fn an_asset_program_resolves_within_the_asset_directories() {
+        use std::sync::Arc;
+
+        use super::native::Launch;
+        use crate::access::{Access, Capabilities, ProcessGrants};
+        use crate::element::{JsError, System};
+        use crate::image::loader::AssetBase;
+
+        let assets = std::env::temp_dir().join(format!("nsh-asset-run-{}", std::process::id()));
+        let tool = assets.join("@app/tools/tool.exe");
+        std::fs::create_dir_all(tool.parent().unwrap()).unwrap();
+        #[cfg(windows)]
+        std::fs::write(&tool, b"MZ").unwrap();
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::write(&tool, b"#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let base = AssetBase::Directories(vec![
+            assets.clone(),
+            std::env::temp_dir().join(format!("nsh-asset-run-other-{}", std::process::id())),
+        ]);
+        let grants = |name: &str| Capabilities {
+            process: crate::access::ProcessGrants {
+                execute: vec![name.into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let message_of = |error: JsError| match error {
+            JsError::Type(message) | JsError::Range(message) | JsError::Error(message) => message,
+            JsError::Fields(fields) => fields.message,
+        };
+        // A desktop OS: the test process itself (the default is a mobile
+        // one, which `Launch` refuses before anything else).
+        let os = if cfg!(target_os = "windows") {
+            crate::platform::Os::Windows
+        } else if cfg!(target_os = "macos") {
+            crate::platform::Os::MacOs
+        } else {
+            crate::platform::Os::Linux
+        };
+        let system = System {
+            access: Arc::new(Access {
+                declared: grants("asset:/@app/tools/tool.exe"),
+                granted: None,
+            }),
+            data_dir: Some(assets.parent().unwrap().join("data")),
+            asset_base: Some(base.clone()),
+            paths: Default::default(),
+            quotas: Default::default(),
+            locals: Default::default(),
+            os,
+            ..Default::default()
+        };
+
+        // Resolved where the directories have it (the first that does).
+        let launch = Launch::new(
+            &system,
+            "asset:/@app/tools/tool.exe".into(),
+            Vec::new(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            std::path::PathBuf::from(&launch.command),
+            crate::access::canonicalize(&tool).unwrap()
+        );
+
+        // A path leading out of the asset directories is refused, even when
+        // the manifest granted that exact name.
+        let escape = grants("asset:/@app/../../outside.exe");
+        let escape = System {
+            access: Arc::new(Access {
+                declared: escape,
+                granted: None,
+            }),
+            ..system.clone()
+        };
+        let error = Launch::new(
+            &escape,
+            "asset:/@app/../../outside.exe".into(),
+            Vec::new(),
+            None,
+            None,
+        )
+        .err()
+        .unwrap();
+        assert!(message_of(error).contains(".."));
+
+        // Served over HTTP (the dev server): no file to run.
+        let http = System {
+            asset_base: Some(AssetBase::Http("http://127.0.0.1:8799/assets/".into())),
+            ..system.clone()
+        };
+        let error = Launch::new(
+            &http,
+            "asset:/@app/tools/tool.exe".into(),
+            Vec::new(),
+            None,
+            None,
+        )
+        .err()
+        .unwrap();
+        assert!(message_of(error).contains("HTTP"));
+
+        // No asset directories at all.
+        let none = System {
+            asset_base: None,
+            ..system.clone()
+        };
+        let error = Launch::new(
+            &none,
+            "asset:/@app/tools/tool.exe".into(),
+            Vec::new(),
+            None,
+            None,
+        )
+        .err()
+        .unwrap();
+        assert!(message_of(error).contains("resolves no asset paths"));
+
+        std::fs::remove_dir_all(&assets).unwrap();
     }
 
     /// A child the system reaped (its host ignores SIGCHLD) is not

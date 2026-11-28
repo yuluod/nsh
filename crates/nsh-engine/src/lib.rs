@@ -2778,6 +2778,7 @@ impl<M: TextEngine + 'static> Driver<M> {
                         ),
                         app_url: app_url.clone(),
                         data_dir: data_dir(&config),
+                        asset_base: config.assets.as_ref().and_then(|a| a.base()),
                         paths: bundle_system_paths(bundle),
                         wake: Arc::new(move || {
                             let _ = system_tx.send(Message::Wake);

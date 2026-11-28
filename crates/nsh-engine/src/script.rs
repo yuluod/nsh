@@ -16,6 +16,10 @@ pub(crate) struct SystemConfig {
     /// The core's address, which every VM reads (`UrlScheme.url()`).
     pub(crate) app_url: nsh_core::url_scheme::AppUrlCell,
     pub(crate) data_dir: Option<std::path::PathBuf>,
+    /// Where the app's bundled (`asset:/…`) files are on disk: a packaged
+    /// desktop app's own, beside the running runner. `process.run` of an
+    /// `asset:/…` program resolves it through this.
+    pub(crate) asset_base: Option<nsh_core::image::loader::AssetBase>,
     pub(crate) paths: nsh_core::access::TrustedPaths,
     pub(crate) wake: std::sync::Arc<dyn Fn() + Send + Sync>,
     /// The embedding app's side of `nsh/host`.
@@ -117,6 +121,7 @@ mod imp {
                 }
             };
             host.set_system_access(system.access, system.data_dir);
+            host.set_system_asset_base(system.asset_base);
             host.set_system_paths(system.paths);
             host.set_websocket_transport(system.websocket);
             host.set_refuse_connections(system.refuse_connections);

@@ -1206,6 +1206,7 @@ impl JsHost for CallHost<'_> {
             shared.system_quotas.clone(),
         )
         .with_locals(shared.system_locals.clone())
+        .with_asset_base(shared.system_asset_base.borrow().clone())
         .with_exit(shared.system_exit_handler.borrow().clone())
         .with_websocket(shared.system_websocket.borrow().clone())
         .with_refuse_connections(shared.system_refuse_connections.borrow().clone())

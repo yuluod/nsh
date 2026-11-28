@@ -1840,7 +1840,10 @@ fn valid_command(command: &str) -> bool {
             || absolute(Path::new(command))
             // A bare name has no drive (`C:git` is relative to the host's
             // directory on drive C).
-            || (!command.contains(['/', '\\', ':']) && command != "." && command != ".."))
+            || (!command.contains(['/', '\\', ':']) && command != "." && command != "..")
+            // A bundled file of the app's, run where the host put it
+            // (`process.run` of an `asset:/…` program resolves it there).
+            || command.starts_with("asset:/"))
 }
 
 fn validate_path_pattern(path: &str) -> Result<(), String> {

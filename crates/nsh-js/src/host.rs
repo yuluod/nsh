@@ -62,6 +62,11 @@ pub(crate) struct Shared {
     /// The core's address (`UrlScheme.url()`).
     pub(crate) system_app_url: RefCell<nsh_core::url_scheme::AppUrlCell>,
     pub(crate) system_data_dir: RefCell<Option<std::path::PathBuf>>,
+    /// Where the app's bundled (`asset:/…`) files are on disk: a packaged
+    /// desktop app's own. `process.run` of an `asset:/…` program resolves
+    /// it through this.
+    pub(crate) system_asset_base:
+        RefCell<Option<nsh_core::image::loader::AssetBase>>,
     pub(crate) system_paths: RefCell<nsh_core::access::TrustedPaths>,
     /// The VM's counts of limited resources for Rust modules (`net`'s
     /// sockets), handed to their calls' `System`.
@@ -757,6 +762,16 @@ impl Host {
     ) {
         *self.shared.system_access.borrow_mut() = access;
         *self.shared.system_data_dir.borrow_mut() = data_dir;
+    }
+
+    /// Sets where the app's bundled (`asset:/…`) files are on disk: a
+    /// packaged desktop app's own, beside the running runner (`process.run`
+    /// of an `asset:/…` program resolves it through this).
+    pub fn set_system_asset_base(
+        &self,
+        base: Option<nsh_core::image::loader::AssetBase>,
+    ) {
+        *self.shared.system_asset_base.borrow_mut() = base;
     }
 
     /// Sets trusted application and home directory anchors for manifest grants.
