@@ -121,8 +121,9 @@ impl AssetBase {
 
     /// Whether `path` is one of its bundled files (by its text, `..`
     /// resolved): those are the app's own, read whatever `fs.read` roots
-    /// it declares.
-    fn holds(&self, path: &std::path::Path) -> bool {
+    /// it declares. A `process.run` of an `asset:/…` program checks the
+    /// executable it resolves the same way, after its links are resolved.
+    pub(crate) fn holds(&self, path: &std::path::Path) -> bool {
         let path = crate::access::lexical(path);
         let dirs = match self {
             AssetBase::Http(_) => return false,

@@ -42,7 +42,8 @@ pub struct System {
     /// program resolves it through this; `None` on the web (the dev server
     /// serves the files over HTTP) and on iOS and Android, where a bundled
     /// file cannot run.
-    pub asset_base: Option<crate::image::loader::AssetBase>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub asset_base: Option<crate::image::AssetBase>,
     /// The host's anchors of `${pluginDir}` and `${homeDir}`.
     pub paths: TrustedPaths,
     /// The VM's counts of limited resources.
@@ -95,6 +96,7 @@ impl System {
         Self {
             access,
             data_dir,
+            #[cfg(not(target_arch = "wasm32"))]
             asset_base: None,
             paths,
             quotas,
@@ -161,7 +163,7 @@ impl System {
     /// Sets where the app's bundled (`asset:/…`) files are on disk, when
     /// the host has them in directories it can name (`process.run` of an
     /// `asset:/…` program resolves through this).
-    pub fn with_asset_base(mut self, base: Option<crate::image::loader::AssetBase>) -> Self {
+    pub fn with_asset_base(mut self, base: Option<crate::image::AssetBase>) -> Self {
         self.asset_base = base;
         self
     }

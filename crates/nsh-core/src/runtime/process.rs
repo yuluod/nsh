@@ -426,7 +426,7 @@ mod native {
         time::{Duration, Instant},
     };
 
-    use crate::image::loader::AssetBase;
+    use crate::image::AssetBase;
 
     use tokio::sync::mpsc as channel;
 
@@ -578,8 +578,19 @@ mod native {
                 ));
             }
             // An `asset:/@<package>/<path>` command runs a file the app
-            // ships, where the host put it.
+            // ships, where the host put it. The package-relative form is
+            // required: a tail with a root (`asset://bin/sh` strips to
+            // `/bin/sh`) or a `..` would leave the asset directories, and
+            // a resolved file that has left them (a symlink inside) does
+            // too — the host's own `file()` gives the first directory that
+            // has the file, checked against the roots it names.
             let command = match command.strip_prefix("asset:/") {
+                Some(path) if !path.starts_with('@') => {
+                    return Err(JsError::Type(format!(
+                        "`{command}` is not an asset program: run \
+                         asset:/@<package>/<file> of a file the app ships"
+                    )));
+                }
                 Some(path) => {
                     if path.contains("..") {
                         return Err(JsError::Type(
@@ -600,7 +611,16 @@ mod native {
                         ))
                         .with_code("ENOENT"));
                     }
-                    match base.file(path).filter(|file| file.is_file()) {
+                    let resolved = base.file(path).filter(|file| file.is_file());
+                    // The file must stay one of the host's bundled files,
+                    // after its links are resolved: a symlink inside the
+                    // asset directories that points outside them does not
+                    // run (`holds` checks the lexically resolved path).
+                    let in_roots = resolved.as_ref().is_some_and(|file| {
+                        let link_free = crate::access::canonicalize(file);
+                        link_free.as_ref().is_ok_and(|real| base.holds(real))
+                    });
+                    match resolved.filter(|_| in_roots) {
                         Some(file) => file.to_string_lossy().into_owned(),
                         None => {
                             return Err(JsError::Error(format!("the app ships no `{command}`"))
@@ -610,13 +630,6 @@ mod native {
                 }
                 None => command,
             };
-            if args.len() > 4096 {
-                return Err(JsError::access_denied(
-                    format!("`{command}` is not granted by capabilities.process.execute"),
-                    "process",
-                    command,
-                ));
-            }
             if args.len() > 4096 {
                 return Err(JsError::Type("too many arguments".into()));
             }
@@ -1747,9 +1760,9 @@ mod tests {
         use std::sync::Arc;
 
         use super::native::Launch;
-        use crate::access::{Access, Capabilities, ProcessGrants};
+        use crate::access::{Access, Capabilities};
         use crate::element::{JsError, System};
-        use crate::image::loader::AssetBase;
+        use crate::image::AssetBase;
 
         let assets = std::env::temp_dir().join(format!("nsh-asset-run-{}", std::process::id()));
         let tool = assets.join("@app/tools/tool.exe");
@@ -1834,6 +1847,56 @@ mod tests {
         .err()
         .unwrap();
         assert!(message_of(error).contains(".."));
+
+        // A rooted tail is not a bundled file, however it is granted: it
+        // would replace the asset directory and run a host executable
+        // (`asset://bin/sh` strips to `/bin/sh`); a name without the
+        // `@<package>` root is the same refusal. Each grant names the
+        // command it covers.
+        for name in ["asset://bin/sh", "asset:/app"] {
+            let granted = System {
+                access: Arc::new(Access {
+                    declared: grants(name),
+                    granted: None,
+                }),
+                ..system.clone()
+            };
+            let error = Launch::new(&granted, name.into(), Vec::new(), None, None)
+                .err()
+                .unwrap();
+            let message = message_of(error);
+            assert!(
+                message.contains("not an asset program"),
+                "{name}: {message}"
+            );
+        }
+
+        // A symlink inside the asset directories that leads outside them
+        // does not run either (Windows makes symlinks a privilege, so the
+        // platform without it just skips the link case).
+        let outside = std::env::temp_dir().join(format!(
+            "nsh-asset-run-outside-{}-{}.exe",
+            std::process::id(),
+            std::process::id().to_string() + "-t"
+        ));
+        std::fs::write(&outside, b"MZ").unwrap();
+        #[cfg(unix)]
+        {
+            let link = assets.join("@app/link.exe");
+            std::os::unix::fs::symlink(&outside, &link).unwrap();
+            let error = Launch::new(
+                &system,
+                "asset:/@app/link.exe".into(),
+                Vec::new(),
+                None,
+                None,
+            )
+            .err()
+            .unwrap();
+            assert!(message_of(error).contains("the app ships no"));
+            std::fs::remove_file(&link).unwrap();
+        }
+        std::fs::remove_file(&outside).unwrap();
 
         // Served over HTTP (the dev server): no file to run.
         let http = System {
